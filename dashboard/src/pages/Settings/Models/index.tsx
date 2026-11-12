@@ -41,6 +41,7 @@ import {
   CustomProviderModal,
   ActiveModelPool,
   LoadingState,
+  ModelPoolSettings,
   PresetGroupCard,
   PresetProviderCard,
   ProviderCard,
@@ -418,6 +419,8 @@ export default function ModelsPage() {
             providers={providers}
             onSaved={fetchAll}
           />
+
+          <ModelPoolSettings />
 
           <Divider style={{ margin: "24px 0" }} />
 

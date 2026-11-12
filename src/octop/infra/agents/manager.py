@@ -26,7 +26,12 @@ from octop.i18n.domains.agents import (
 )
 from octop.infra.agents.memory.backend import memory_backend_from_agent_config
 from octop.infra.agents.memory.slim import MemorySlimCoordinator
-from octop.infra.agents.providers import HostModelFactory, ProviderStore, sync_providers_to_harness
+from octop.infra.agents.providers import (
+    AutoRouteCandidate,
+    HostModelFactory,
+    ProviderStore,
+    sync_providers_to_harness,
+)
 from octop.infra.agents.providers.health import ModelHealthRegistry
 from octop.infra.agents.providers.pool import ModelPoolRouter, pool_key_for_ref
 from octop.infra.agents.security import SecuritySettingsStore, ToolGuardRulesStore
@@ -44,6 +49,7 @@ from octop.infra.agents.settings.media_generation import (
     MediaGenerationSettingsStore,
     MediaProviderUpdate,
 )
+from octop.infra.agents.settings.model_pool import ModelPoolConfigStore
 from octop.infra.agents.settings.profile import (
     dump_id_list,
     dumps_config,
@@ -553,6 +559,7 @@ class AgentManager:
         self._host_models = HostModelFactory()
         self._model_health = ModelHealthRegistry()
         self._model_pool_router = ModelPoolRouter(health=self._model_health)
+        self._model_pool_config = ModelPoolConfigStore(settings_repo=repos.settings_repo)
         self._connector_svc = ConnectorService(
             repo=repos.connector_repo,
             secret_repo=repos.secret_repo,
@@ -2014,16 +2021,88 @@ class AgentManager:
         """Return the next healthy pool member for *ref*, or *ref* unchanged.
 
         A pool is every usable ``provider/model`` ref sharing the ref's
-        model id. Single-member pools and fully unhealthy pools keep the
-        original ref; failover still handles the turn on failure.
+        model id, filtered by the saved pool config (unchecked members
+        never rotate in). When round-robin is off for the model, the
+        first healthy member is used instead of rotating. When the whole
+        pool is unhealthy, the configured fallback chain is tried in
+        order. Single-member pools and fully unhealthy pools (with no
+        usable fallback) keep the original ref; failover still handles
+        the turn on failure.
         """
         model_id = pool_key_for_ref(ref)
         if not model_id:
             return ref
-        pool = self._providers.pool_refs_for(model_id)
-        if len(pool) <= 1:
-            return ref
-        return self._model_pool_router.next_ref(model_id, pool) or ref
+        config = self._model_pool_config.get(model_id)
+        pool = self._model_pool_config.effective_pool(
+            model_id, self._providers.pool_refs_for(model_id)
+        )
+        picked = self._pick_pool_member(model_id, pool, rotate=config.enabled)
+        if picked is not None:
+            return picked
+        for fallback in config.fallbacks:
+            fallback_id = pool_key_for_ref(fallback)
+            if not fallback_id:
+                continue
+            fallback_config = self._model_pool_config.get(fallback_id)
+            fallback_pool = self._model_pool_config.effective_pool(
+                fallback_id, self._providers.pool_refs_for(fallback_id)
+            )
+            if fallback_pool:
+                picked = self._pick_pool_member(
+                    fallback_id, fallback_pool, rotate=fallback_config.enabled
+                )
+                if picked is not None:
+                    return picked
+            elif self._model_health.is_routable(fallback):
+                return fallback
+        return ref
+
+    def _pick_pool_member(self, model_id: str, pool: list[str], *, rotate: bool) -> str | None:
+        """Return the next healthy pool member, or None when none is healthy."""
+        if not pool:
+            return None
+        if rotate and len(pool) > 1:
+            return self._model_pool_router.next_ref(model_id, pool)
+        for member in pool:
+            if self._model_health.is_routable(member):
+                return member
+        return None
+
+    def _failover_candidates(
+        self, current_ref: str, needs_multimodal: bool
+    ) -> list[AutoRouteCandidate]:
+        """Order auto-route candidates for mid-turn failover.
+
+        Same-model pool members first (in configured pool order), then
+        the configured fallback chain, then every other usable model.
+        The middleware filters by health and context fit, so unhealthy
+        entries are skipped automatically.
+        """
+        base = self._providers.list_auto_route_candidates(needs_multimodal=needs_multimodal)
+        by_ref = {candidate.ref: candidate for candidate in base}
+        model_id = pool_key_for_ref(current_ref)
+        ordered: list[AutoRouteCandidate] = []
+        seen: set[str] = set()
+        if model_id:
+            config = self._model_pool_config.get(model_id)
+            pool = self._model_pool_config.effective_pool(
+                model_id, self._providers.pool_refs_for(model_id)
+            )
+            for ref in pool:
+                candidate = by_ref.get(ref)
+                if candidate is not None and ref not in seen:
+                    ordered.append(candidate)
+                    seen.add(ref)
+            for fallback in config.fallbacks:
+                candidate = by_ref.get(fallback)
+                if candidate is not None and fallback not in seen:
+                    ordered.append(candidate)
+                    seen.add(fallback)
+        for candidate in base:
+            if candidate.ref not in seen:
+                ordered.append(candidate)
+                seen.add(candidate.ref)
+        return ordered
 
     def is_auto_route_model_available(self, ref: str) -> bool:
         """Return whether a usable model can start an automatic route now."""
@@ -4270,10 +4349,8 @@ class AgentManager:
 
                 retry_middleware: Any = SafeModelFailoverMiddleware(
                     health=self._model_health,
-                    candidates=lambda _current_ref, needs_multimodal: (
-                        self._providers.list_auto_route_candidates(
-                            needs_multimodal=needs_multimodal
-                        )
+                    candidates=lambda _current_ref, needs_multimodal: self._failover_candidates(
+                        _current_ref, needs_multimodal=needs_multimodal
                     ),
                     model_for_ref=get_chat_model,
                     max_retries=applied.model_retry_max_retries,
