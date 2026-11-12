@@ -50,6 +50,7 @@ from octop.infra.agents.settings.media_generation import (
     MediaProviderUpdate,
 )
 from octop.infra.agents.settings.model_pool import ModelPoolConfigStore
+from octop.infra.agents.settings.model_roles import ModelRolesStore
 from octop.infra.agents.settings.profile import (
     dump_id_list,
     dumps_config,
@@ -560,6 +561,7 @@ class AgentManager:
         self._model_health = ModelHealthRegistry()
         self._model_pool_router = ModelPoolRouter(health=self._model_health)
         self._model_pool_config = ModelPoolConfigStore(settings_repo=repos.settings_repo)
+        self._model_roles = ModelRolesStore(settings_repo=repos.settings_repo)
         self._connector_svc = ConnectorService(
             repo=repos.connector_repo,
             secret_repo=repos.secret_repo,
@@ -2002,13 +2004,60 @@ class AgentManager:
                 return ref
         return self._providers.resolve_first_model_ref()
 
+    def _pick_role_ref(self, ref: str) -> str | None:
+        """Resolve one role ref through its pool, or None if unusable.
+
+        Unlike :meth:`rotate_pool_ref` (which keeps the original ref so
+        failover can handle the turn), this returns ``None`` when the
+        whole pool is unhealthy, so the caller can move on to the next
+        role. A pool of any size is supported — every usable channel
+        for the model is in it, with no cap.
+        """
+        model_id = pool_key_for_ref(ref)
+        if not model_id:
+            return None
+        config = self._model_pool_config.get(model_id)
+        pool = self._model_pool_config.effective_pool(
+            model_id, self._providers.pool_refs_for(model_id)
+        )
+        if pool:
+            return self._pick_pool_member(model_id, pool, rotate=config.enabled)
+        if self._providers.is_model_ref_usable(ref) and self._model_health.is_routable(ref):
+            return ref
+        return None
+
+    def resolve_role_model_ref(self) -> str | None:
+        """Return the first healthy role model: primary, backup, last resort.
+
+        Each role is tried through its own pool (round-robin across all
+        of that model's usable channels). Returns ``None`` when no role
+        is set or every set role's pool is unhealthy, so the caller can
+        fall back to the existing automatic routing.
+        """
+        roles = self._model_roles.load()
+        for ref in (roles.primary, roles.backup, roles.last_resort):
+            if not ref:
+                continue
+            picked = self._pick_role_ref(ref)
+            if picked is not None:
+                return picked
+        return None
+
     def resolve_fallback_model_ref(self) -> str | None:
         """Return the first healthy model for an automatic route.
 
-        When the picked model belongs to a pool (the same model id behind
-        several keys or channels), the returned ref rotates through the
-        pool so consecutive turns spread across its members.
+        Role models come first (primary, then backup, then last resort,
+        each resolved through its pool). When no role is set or every
+        set role is unhealthy, the previous behaviour applies: the
+        configured fallback model, then any healthy auto-route
+        candidate. When the picked model belongs to a pool (the same
+        model id behind several keys or channels), the returned ref
+        rotates through the pool so consecutive turns spread across its
+        members.
         """
+        roles_ref = self.resolve_role_model_ref()
+        if roles_ref is not None:
+            return roles_ref
         configured = self._resolve_configured_fallback_model_ref()
         if configured and self._model_health.is_routable(configured):
             return self.rotate_pool_ref(configured)
@@ -2068,15 +2117,26 @@ class AgentManager:
                 return member
         return None
 
+    def _role_pool_refs(self, ref: str) -> list[str]:
+        """Return the usable pool refs behind one role ref (or the ref itself)."""
+        model_id = pool_key_for_ref(ref)
+        if not model_id:
+            return []
+        pool = self._model_pool_config.effective_pool(
+            model_id, self._providers.pool_refs_for(model_id)
+        )
+        return pool if pool else [ref]
+
     def _failover_candidates(
         self, current_ref: str, needs_multimodal: bool
     ) -> list[AutoRouteCandidate]:
         """Order auto-route candidates for mid-turn failover.
 
-        Same-model pool members first (in configured pool order), then
-        the configured fallback chain, then every other usable model.
-        The middleware filters by health and context fit, so unhealthy
-        entries are skipped automatically.
+        Same-model pool members first, then the backup and last-resort
+        roles (each expanded to its pool), then the configured fallback
+        chain, then every other usable model. The middleware filters by
+        health and context fit, so unhealthy entries are skipped
+        automatically.
         """
         base = self._providers.list_auto_route_candidates(needs_multimodal=needs_multimodal)
         by_ref = {candidate.ref: candidate for candidate in base}
@@ -2093,6 +2153,15 @@ class AgentManager:
                 if candidate is not None and ref not in seen:
                     ordered.append(candidate)
                     seen.add(ref)
+            roles = self._model_roles.load()
+            for role_ref in (roles.backup, roles.last_resort):
+                if not role_ref:
+                    continue
+                for ref in self._role_pool_refs(role_ref):
+                    candidate = by_ref.get(ref)
+                    if candidate is not None and ref not in seen:
+                        ordered.append(candidate)
+                        seen.add(ref)
             for fallback in config.fallbacks:
                 candidate = by_ref.get(fallback)
                 if candidate is not None and fallback not in seen:

@@ -42,6 +42,7 @@ import {
   ActiveModelPool,
   LoadingState,
   ModelPoolSettings,
+  ModelRolesSettings,
   PresetGroupCard,
   PresetProviderCard,
   ProviderCard,
@@ -421,6 +422,8 @@ export default function ModelsPage() {
           />
 
           <ModelPoolSettings />
+
+          <ModelRolesSettings />
 
           <Divider style={{ margin: "24px 0" }} />
 
