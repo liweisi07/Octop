@@ -15,8 +15,13 @@ from octop.infra.agents.providers.health import ModelHealthRegistry
 
 
 def pool_key_for_ref(ref: str) -> str:
-    """Return the pool key for a model ref (the model id after ``/``)."""
-    return ref.partition("/")[2].strip()
+    """Return the pool key for a model ref (the model id after ``/``).
+
+    Lowercased: the same model is often spelled with different casing
+    behind different channels (``DeepSeek-V4-Flash`` vs
+    ``deepseek-v4-flash``) and those must land in one pool.
+    """
+    return ref.partition("/")[2].strip().lower()
 
 
 class ModelPoolRouter:
@@ -34,7 +39,7 @@ class ModelPoolRouter:
 
     def next_ref(self, model_id: str, refs: list[str]) -> str | None:
         """Return the next healthy ref for *model_id*, or None if none is healthy."""
-        model_id = model_id.strip()
+        model_id = model_id.strip().lower()
         if not model_id or not refs:
             return None
         with self._lock:

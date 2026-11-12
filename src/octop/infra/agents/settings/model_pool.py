@@ -68,7 +68,7 @@ class ModelPoolConfigStore:
         if not isinstance(parsed, dict):
             return configs
         for model_id, item in parsed.items():
-            model_id = str(model_id).strip()
+            model_id = str(model_id).strip().lower()
             if not model_id or not isinstance(item, dict):
                 continue
             configs[model_id] = ModelPoolConfig(
@@ -79,11 +79,11 @@ class ModelPoolConfigStore:
         return configs
 
     def get(self, model_id: str) -> ModelPoolConfig:
-        return self.load().get(model_id.strip(), ModelPoolConfig())
+        return self.load().get(model_id.strip().lower(), ModelPoolConfig())
 
     def save(self, configs: dict[str, ModelPoolConfig]) -> dict[str, ModelPoolConfig]:
         payload = {
-            model_id: {
+            str(model_id).strip().lower(): {
                 "enabled": bool(config.enabled),
                 "members": list(config.members),
                 "fallbacks": list(config.fallbacks),

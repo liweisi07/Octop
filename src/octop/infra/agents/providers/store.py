@@ -407,6 +407,7 @@ class ProviderStore:
         model_id = model_id.strip()
         if not model_id:
             return []
+        wanted = model_id.lower()
         refs: list[str] = []
         for row in self.iter_usable_rows():
             for model in row.get_models():
@@ -414,8 +415,11 @@ class ProviderStore:
                     model, provider_name=row.name, provider_api_key=row.api_key
                 ):
                     continue
-                if str(model.get("id") or "").strip() == model_id:
-                    refs.append(f"{row.name}/{model_id}")
+                stored = str(model.get("id") or "").strip()
+                if stored.lower() == wanted:
+                    # Keep the stored casing in the ref: model lookup
+                    # downstream is case-sensitive.
+                    refs.append(f"{row.name}/{stored}")
         return refs
 
     def is_model_ref_usable(self, ref: str) -> bool:

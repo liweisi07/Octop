@@ -55,15 +55,20 @@ def _pool_view(server: Any) -> list[ModelPoolItem]:
     store = _store(server)
     saved = store.load()
     by_model: dict[str, list[str]] = {}
+    display: dict[str, str] = {}
     for item in list_resolved_models(server.services.provider_repo.list_all()):
         model_id = str(item.get("model") or "").strip()
         provider_name = str(item.get("provider_name") or "").strip()
         if not model_id or not provider_name:
             continue
         ref = f"{provider_name}/{model_id}"
-        by_model.setdefault(model_id, [])
-        if ref not in by_model[model_id]:
-            by_model[model_id].append(ref)
+        # Group case-insensitively: "DeepSeek-V4-Flash" (AMD) and
+        # "deepseek-v4-flash" (sensenova) are the same model.
+        key = model_id.lower()
+        display.setdefault(key, model_id)
+        by_model.setdefault(key, [])
+        if ref not in by_model[key]:
+            by_model[key].append(ref)
     model_ids = sorted(set(by_model) | set(saved))
     pools: list[ModelPoolItem] = []
     for model_id in model_ids:
@@ -82,7 +87,7 @@ def _pool_view(server: Any) -> list[ModelPoolItem]:
             continue
         pools.append(
             ModelPoolItem(
-                model_id=model_id,
+                model_id=display.get(model_id, model_id),
                 enabled=config.enabled,
                 members=members,
                 fallbacks=list(config.fallbacks),
@@ -116,7 +121,7 @@ async def save_model_pools(
 ) -> ModelPoolsResponse:
     """Replace the saved pool config with the submitted pools."""
     configs = {
-        item.model_id.strip(): ModelPoolConfig(
+        item.model_id.strip().lower(): ModelPoolConfig(
             enabled=bool(item.enabled),
             members=tuple(dict.fromkeys(ref.strip() for ref in item.members if "/" in ref.strip())),
             fallbacks=tuple(

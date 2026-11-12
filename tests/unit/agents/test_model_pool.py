@@ -23,6 +23,10 @@ def test_pool_key_for_ref() -> None:
     assert pool_key_for_ref("deepseek/deepseek-chat") == "deepseek-chat"
     assert pool_key_for_ref("deepseek-chat") == ""
     assert pool_key_for_ref("") == ""
+    # Same model spelled with different casing behind different channels
+    # must land in one pool.
+    assert pool_key_for_ref("AMD/DeepSeek-V4-Flash") == "deepseek-v4-flash"
+    assert pool_key_for_ref("sensenova/deepseek-v4-flash") == "deepseek-v4-flash"
 
 
 def test_next_ref_rotates_across_healthy_members() -> None:
@@ -111,6 +115,22 @@ def test_pool_refs_for_groups_same_model_across_providers(store: ProviderStore) 
     assert store.pool_refs_for("qwen-max") == ["other/qwen-max"]
     assert store.pool_refs_for("nope") == []
     assert store.pool_refs_for("") == []
+
+
+def test_pool_refs_for_groups_case_insensitively(store: ProviderStore) -> None:
+    # Real-world case: AMD spells it "DeepSeek-V4-Flash", sensenova
+    # "deepseek-v4-flash". One pool, refs keep their stored casing.
+    _add_provider(store, "AMD", "DeepSeek-V4-Flash")
+    _add_provider(store, "sensenova", "deepseek-v4-flash")
+
+    assert store.pool_refs_for("deepseek-v4-flash") == [
+        "AMD/DeepSeek-V4-Flash",
+        "sensenova/deepseek-v4-flash",
+    ]
+    assert store.pool_refs_for("DeepSeek-V4-Flash") == [
+        "AMD/DeepSeek-V4-Flash",
+        "sensenova/deepseek-v4-flash",
+    ]
 
 
 def test_pool_refs_for_ignores_unusable_rows(store: ProviderStore) -> None:
