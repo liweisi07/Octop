@@ -28,6 +28,7 @@ from octop.infra.agents.memory.backend import memory_backend_from_agent_config
 from octop.infra.agents.memory.slim import MemorySlimCoordinator
 from octop.infra.agents.providers import HostModelFactory, ProviderStore, sync_providers_to_harness
 from octop.infra.agents.providers.health import ModelHealthRegistry
+from octop.infra.agents.providers.pool import ModelPoolRouter, pool_key_for_ref
 from octop.infra.agents.security import SecuritySettingsStore, ToolGuardRulesStore
 from octop.infra.agents.security.hitl_session import (
     HitlSessionPolicyStore,
@@ -551,6 +552,7 @@ class AgentManager:
         )
         self._host_models = HostModelFactory()
         self._model_health = ModelHealthRegistry()
+        self._model_pool_router = ModelPoolRouter(health=self._model_health)
         self._connector_svc = ConnectorService(
             repo=repos.connector_repo,
             secret_repo=repos.secret_repo,
@@ -1994,14 +1996,34 @@ class AgentManager:
         return self._providers.resolve_first_model_ref()
 
     def resolve_fallback_model_ref(self) -> str | None:
-        """Return the first healthy model for an automatic route."""
+        """Return the first healthy model for an automatic route.
+
+        When the picked model belongs to a pool (the same model id behind
+        several keys or channels), the returned ref rotates through the
+        pool so consecutive turns spread across its members.
+        """
         configured = self._resolve_configured_fallback_model_ref()
         if configured and self._model_health.is_routable(configured):
-            return configured
+            return self.rotate_pool_ref(configured)
         for candidate in self._providers.list_auto_route_candidates(needs_multimodal=False):
             if self._model_health.is_routable(candidate.ref):
-                return candidate.ref
+                return self.rotate_pool_ref(candidate.ref)
         return None
+
+    def rotate_pool_ref(self, ref: str) -> str:
+        """Return the next healthy pool member for *ref*, or *ref* unchanged.
+
+        A pool is every usable ``provider/model`` ref sharing the ref's
+        model id. Single-member pools and fully unhealthy pools keep the
+        original ref; failover still handles the turn on failure.
+        """
+        model_id = pool_key_for_ref(ref)
+        if not model_id:
+            return ref
+        pool = self._providers.pool_refs_for(model_id)
+        if len(pool) <= 1:
+            return ref
+        return self._model_pool_router.next_ref(model_id, pool) or ref
 
     def is_auto_route_model_available(self, ref: str) -> bool:
         """Return whether a usable model can start an automatic route now."""

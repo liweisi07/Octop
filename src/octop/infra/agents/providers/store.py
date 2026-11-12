@@ -398,6 +398,26 @@ class ProviderStore:
                 )
         return candidates
 
+    def pool_refs_for(self, model_id: str) -> list[str]:
+        """Return usable refs sharing one model id (a model pool).
+
+        The same model behind several API keys or channels appears once
+        per provider row; those refs form one pool for round-robin routing.
+        """
+        model_id = model_id.strip()
+        if not model_id:
+            return []
+        refs: list[str] = []
+        for row in self.iter_usable_rows():
+            for model in row.get_models():
+                if not is_chat_eligible_model(
+                    model, provider_name=row.name, provider_api_key=row.api_key
+                ):
+                    continue
+                if str(model.get("id") or "").strip() == model_id:
+                    refs.append(f"{row.name}/{model_id}")
+        return refs
+
     def is_model_ref_usable(self, ref: str) -> bool:
         """Return True when *ref* points at a chat-eligible model on a usable provider."""
         ref = ref.strip()
