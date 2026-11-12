@@ -840,7 +840,12 @@ class GlobalProcessor:
                 and self._agent_manager.is_auto_route_model_available(preferred)
                 and self._agent_manager.model_ref_allowed_for_user(user_id, preferred)
             ):
-                model_ref = preferred
+                rotated = self._agent_manager.rotate_pool_ref(preferred)
+                model_ref = (
+                    rotated
+                    if self._agent_manager.model_ref_allowed_for_user(user_id, rotated)
+                    else preferred
+                )
                 automatic = True
         if not model_ref:
             fallback = self._agent_manager.resolve_fallback_model_ref()
