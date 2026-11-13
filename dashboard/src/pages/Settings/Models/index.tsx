@@ -41,7 +41,6 @@ import {
   CustomProviderModal,
   ActiveModelPool,
   LoadingState,
-  ModelPoolSettings,
   ModelRolesSettings,
   PresetGroupCard,
   PresetProviderCard,
@@ -420,8 +419,6 @@ export default function ModelsPage() {
             providers={providers}
             onSaved={fetchAll}
           />
-
-          <ModelPoolSettings />
 
           <ModelRolesSettings />
 

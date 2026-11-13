@@ -562,6 +562,10 @@ class AgentManager:
         self._model_pool_router = ModelPoolRouter(health=self._model_health)
         self._model_pool_config = ModelPoolConfigStore(settings_repo=repos.settings_repo)
         self._model_roles = ModelRolesStore(settings_repo=repos.settings_repo)
+        # Round-robin position per role, so consecutive turns rotate
+        # across the models of one role (primary, then backup, last resort).
+        self._role_counters: dict[str, int] = {}
+        self._role_counters_lock = threading.Lock()
         self._connector_svc = ConnectorService(
             repo=repos.connector_repo,
             secret_repo=repos.secret_repo,
@@ -2026,19 +2030,46 @@ class AgentManager:
             return ref
         return None
 
+    def _pick_from_role_list(self, role: str, refs: list[str]) -> str | None:
+        """Resolve one role's model list, rotating across its models.
+
+        Each turn starts at the next model after the one picked last
+        time, skipping models whose whole pool is unhealthy. Returns
+        ``None`` when the list is empty or every model in it is
+        unhealthy, so the caller can move on to the next role. A role
+        list has no cap on its size.
+        """
+        if not refs:
+            return None
+        with self._role_counters_lock:
+            start = self._role_counters.get(role, 0)
+            for offset in range(len(refs)):
+                index = (start + offset) % len(refs)
+                picked = self._pick_role_ref(refs[index])
+                if picked is not None:
+                    self._role_counters[role] = index + 1
+                    return picked
+            return None
+
     def resolve_role_model_ref(self) -> str | None:
         """Return the first healthy role model: primary, backup, last resort.
 
-        Each role is tried through its own pool (round-robin across all
-        of that model's usable channels). Returns ``None`` when no role
-        is set or every set role's pool is unhealthy, so the caller can
-        fall back to the existing automatic routing.
+        Each role holds a list of models; consecutive turns rotate
+        across the models of the primary role, and only move to the
+        next role when every model in the current role's list is
+        unhealthy. Each picked model is resolved through its own pool
+        (round-robin across all of that model's usable channels).
+        Returns ``None`` when no role is set or every set role is
+        unhealthy, so the caller can fall back to the existing
+        automatic routing.
         """
         roles = self._model_roles.load()
-        for ref in (roles.primary, roles.backup, roles.last_resort):
-            if not ref:
-                continue
-            picked = self._pick_role_ref(ref)
+        for role, refs in (
+            ("primary", roles.primary),
+            ("backup", roles.backup),
+            ("last_resort", roles.last_resort),
+        ):
+            picked = self._pick_from_role_list(role, list(refs))
             if picked is not None:
                 return picked
         return None
@@ -2154,14 +2185,13 @@ class AgentManager:
                     ordered.append(candidate)
                     seen.add(ref)
             roles = self._model_roles.load()
-            for role_ref in (roles.backup, roles.last_resort):
-                if not role_ref:
-                    continue
-                for ref in self._role_pool_refs(role_ref):
-                    candidate = by_ref.get(ref)
-                    if candidate is not None and ref not in seen:
-                        ordered.append(candidate)
-                        seen.add(ref)
+            for role_refs in (roles.backup, roles.last_resort):
+                for role_ref in role_refs:
+                    for ref in self._role_pool_refs(role_ref):
+                        candidate = by_ref.get(ref)
+                        if candidate is not None and ref not in seen:
+                            ordered.append(candidate)
+                            seen.add(ref)
             for fallback in config.fallbacks:
                 candidate = by_ref.get(fallback)
                 if candidate is not None and fallback not in seen:

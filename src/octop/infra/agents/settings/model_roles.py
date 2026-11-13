@@ -1,16 +1,16 @@
-"""Model roles: which model is primary, backup, and last resort.
+"""Model roles: which models are primary, backup, and last resort.
 
 Stored as one JSON blob under the ``model_roles`` settings key::
 
-    {"primary": "provider/model", "backup": "provider/model",
-     "last_resort": "provider/model"}
+    {"primary": ["provider/model", ...], "backup": [...], "last_resort": [...]}
 
-An empty string means "not set". No model name is hard-coded here: the
-user picks any available model ref for each role in the dashboard. The
-automatic route tries primary first, then backup, then last resort; each
-role is resolved through its own model pool (round-robin across all of
-that model's usable channels, skipping unhealthy ones), and only moves to
-the next role when the whole pool is unhealthy. No new database tables.
+Each role holds a list of model refs (no cap): the automatic route
+rotates across the models of the primary role, then the backup role,
+then the last resort. An empty list means "not set". A single string
+value is read as a one-element list for backward compatibility with
+the earlier single-select format. No model name is hard-coded here:
+the user picks any available model refs for each role in the dashboard.
+No new database tables.
 """
 
 from __future__ import annotations
@@ -27,16 +27,28 @@ _ROLES = ("primary", "backup", "last_resort")
 
 @dataclass(frozen=True)
 class ModelRoles:
-    """Which model ref fills each role ("" means unset)."""
+    """Which model refs fill each role (empty tuple means unset)."""
 
-    primary: str = ""
-    backup: str = ""
-    last_resort: str = ""
+    primary: tuple[str, ...] = ()
+    backup: tuple[str, ...] = ()
+    last_resort: tuple[str, ...] = ()
 
 
-def _clean_ref(value: object) -> str:
-    ref = value.strip() if isinstance(value, str) else ""
-    return ref if "/" in ref else ""
+def _clean_refs(value: object) -> tuple[str, ...]:
+    """Normalize one role value to a deduped tuple of ``provider/model`` refs.
+
+    Accepts a list (current format) or a single string (legacy format).
+    """
+    items = value if isinstance(value, list) else [value]
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for item in items:
+        ref = item.strip() if isinstance(item, str) else ""
+        if not ref or "/" not in ref or ref in seen:
+            continue
+        seen.add(ref)
+        cleaned.append(ref)
+    return tuple(cleaned)
 
 
 class ModelRolesStore:
@@ -56,16 +68,16 @@ class ModelRolesStore:
         if not isinstance(parsed, dict):
             return ModelRoles()
         return ModelRoles(
-            primary=_clean_ref(parsed.get("primary")),
-            backup=_clean_ref(parsed.get("backup")),
-            last_resort=_clean_ref(parsed.get("last_resort")),
+            primary=_clean_refs(parsed.get("primary")),
+            backup=_clean_refs(parsed.get("backup")),
+            last_resort=_clean_refs(parsed.get("last_resort")),
         )
 
     def save(self, roles: ModelRoles) -> ModelRoles:
         payload = {
-            "primary": _clean_ref(roles.primary),
-            "backup": _clean_ref(roles.backup),
-            "last_resort": _clean_ref(roles.last_resort),
+            "primary": list(_clean_refs(list(roles.primary))),
+            "backup": list(_clean_refs(list(roles.backup))),
+            "last_resort": list(_clean_refs(list(roles.last_resort))),
         }
         self._settings.set(_SETTINGS_KEY, json.dumps(payload, ensure_ascii=False))
         return self.load()

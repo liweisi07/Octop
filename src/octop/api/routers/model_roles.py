@@ -1,7 +1,8 @@
-"""Model roles — which model is primary, backup, and last resort.
+"""Model roles — which models are primary, backup, and last resort.
 
-Three dropdowns in the dashboard; no model name is hard-coded. The
-automatic route tries primary first, then backup, then last resort.
+Three multi-selects in the dashboard; no model name is hard-coded.
+Each role holds a list of models: the automatic route rotates across
+the models of the primary role, then the backup role, then last resort.
 """
 
 from __future__ import annotations
@@ -19,16 +20,16 @@ router = APIRouter()
 
 
 class ModelRolesResponse(BaseModel):
-    primary: str = ""
-    backup: str = ""
-    last_resort: str = ""
+    primary: list[str] = []
+    backup: list[str] = []
+    last_resort: list[str] = []
     available_models: list[str] = []
 
 
 class ModelRolesSaveBody(BaseModel):
-    primary: str = ""
-    backup: str = ""
-    last_resort: str = ""
+    primary: list[str] = []
+    backup: list[str] = []
+    last_resort: list[str] = []
 
 
 def _store(server: Any) -> ModelRolesStore:
@@ -52,27 +53,34 @@ def _available_models(server: Any) -> list[str]:
 def _view(server: Any) -> ModelRolesResponse:
     roles = _store(server).load()
     return ModelRolesResponse(
-        primary=roles.primary,
-        backup=roles.backup,
-        last_resort=roles.last_resort,
+        primary=list(roles.primary),
+        backup=list(roles.backup),
+        last_resort=list(roles.last_resort),
         available_models=_available_models(server),
     )
 
 
-def _validate_ref(field: str, ref: str, available: list[str]) -> str:
-    ref = ref.strip()
-    if not ref:
-        return ""
-    if "/" not in ref:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field} 的格式应为 提供商/模型，例如 sensenova/deepseek-v4-flash",
-        )
-    if ref not in available:
-        raise HTTPException(
-            status_code=400, detail=f"{field} 的模型 {ref} 当前不可用，请先确认该渠道已配置并启用"
-        )
-    return ref
+def _validate_refs(field: str, refs: list[str], available: list[str]) -> list[str]:
+    """Clean one role's list; every non-empty ref must be a usable model."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        ref = ref.strip() if isinstance(ref, str) else ""
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        if "/" not in ref:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field} 的格式应为 提供商/模型，例如 sensenova/deepseek-v4-flash",
+            )
+        if ref not in available:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field} 的模型 {ref} 当前不可用，请先确认该渠道已配置并启用",
+            )
+        cleaned.append(ref)
+    return cleaned
 
 
 @router.get(
@@ -98,12 +106,12 @@ async def save_model_roles(
     _: Any = Depends(require_permission("providers")),
     server: Any = Depends(get_server),
 ) -> ModelRolesResponse:
-    """Save the three roles. A non-empty ref must be a usable model."""
+    """Save the three roles. Every non-empty ref must be a usable model."""
     available = _available_models(server)
     roles = ModelRoles(
-        primary=_validate_ref("主力模型", body.primary, available),
-        backup=_validate_ref("备用模型", body.backup, available),
-        last_resort=_validate_ref("托底模型", body.last_resort, available),
+        primary=tuple(_validate_refs("主力模型", body.primary, available)),
+        backup=tuple(_validate_refs("备用模型", body.backup, available)),
+        last_resort=tuple(_validate_refs("托底模型", body.last_resort, available)),
     )
     _store(server).save(roles)
     return _view(server)

@@ -1,10 +1,10 @@
 /**
- * ModelRolesSettings — pick which model is primary, backup, and last resort.
+ * ModelRolesSettings — pick which models are primary, backup, and last resort.
  *
- * Three dropdowns, no model name hard-coded: every usable model ref is an
- * option in each dropdown. The automatic route tries primary first, then
- * backup, then last resort. Lives next to the model pool section on the
- * chat-models tab.
+ * Three multi-selects, no model name hard-coded: every usable model ref is
+ * an option in each multi-select. The automatic route rotates across the
+ * models of the primary role, then the backup role, then the last resort.
+ * Lives on the chat-models tab, below the model pool section.
  */
 import { useCallback, useEffect, useState } from "react";
 import { Info } from "lucide-react";
@@ -33,7 +33,7 @@ const ROLE_HINT_KEY: Record<RoleKey, string> = {
 
 export function ModelRolesSettings() {
   const { t } = useTranslation();
-  const [roles, setRoles] = useState<Record<RoleKey, string> | null>(null);
+  const [roles, setRoles] = useState<Record<RoleKey, string[]> | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -46,7 +46,7 @@ export function ModelRolesSettings() {
         backup: data.backup,
         last_resort: data.last_resort,
       });
-      // All usable models, no cap — the dropdown scrolls when the list is long.
+      // All usable models, no cap — the multi-select scrolls when the list is long.
       setAvailableModels(data.available_models);
       setDirty(false);
     } catch (err) {
@@ -60,10 +60,8 @@ export function ModelRolesSettings() {
     void fetchRoles();
   }, [fetchRoles]);
 
-  const handleChange = (key: RoleKey, value: string | undefined) => {
-    setRoles((prev) =>
-      prev === null ? prev : { ...prev, [key]: value ?? "" },
-    );
+  const handleChange = (key: RoleKey, value: string[]) => {
+    setRoles((prev) => (prev === null ? prev : { ...prev, [key]: value }));
     setDirty(true);
   };
 
@@ -121,18 +119,18 @@ export function ModelRolesSettings() {
                   {t(ROLE_LABEL_KEY[key])}
                 </div>
                 <Select
+                  mode="multiple"
                   style={{ width: "100%" }}
                   showSearch
                   allowClear
-                  value={roles[key] || undefined}
+                  value={roles[key]}
                   placeholder={t("models.modelRolesUnset")}
+                  maxTagCount="responsive"
                   options={availableModels.map((ref) => ({
                     value: ref,
                     label: ref,
                   }))}
-                  onChange={(value) =>
-                    handleChange(key, value as string | undefined)
-                  }
+                  onChange={(value) => handleChange(key, value as string[])}
                 />
                 <div
                   style={{
