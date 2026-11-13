@@ -2051,6 +2051,16 @@ class AgentManager:
                     return picked
             return None
 
+    def has_configured_roles(self) -> bool:
+        """Return whether any role model is configured.
+
+        When roles are configured they take precedence over the user's
+        starred preferred model; the star is only used when no role
+        is set.
+        """
+        roles = self._model_roles.load()
+        return bool(roles.primary or roles.backup or roles.last_resort)
+
     def resolve_role_model_ref(self) -> str | None:
         """Return the first healthy role model: primary, backup, last resort.
 

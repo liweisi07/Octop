@@ -60,6 +60,16 @@ def test_store_defaults_to_unset(tmp_path: Path) -> None:
     assert manager._model_roles.load() == ModelRoles(primary=(), backup=(), last_resort=())
 
 
+def test_has_configured_roles(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+
+    assert manager.has_configured_roles() is False
+    _save_roles(manager, backup=["agens/agnes-3.0-flash"])
+    assert manager.has_configured_roles() is True
+    _save_roles(manager)
+    assert manager.has_configured_roles() is False
+
+
 def test_store_save_load_roundtrip(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     _save_roles(

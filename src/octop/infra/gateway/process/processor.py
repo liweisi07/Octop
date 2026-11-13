@@ -830,7 +830,7 @@ class GlobalProcessor:
                     model_ref,
                 ):
                     model_ref = None
-        if not model_ref:
+        if not model_ref and not self._agent_manager.has_configured_roles():
             user_row = self._user_repo.get(user_id)
             preferred = get_preferred_model_from_json(
                 user_row.preferences_json if user_row is not None else None
