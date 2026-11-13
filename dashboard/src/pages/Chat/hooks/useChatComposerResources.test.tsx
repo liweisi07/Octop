@@ -44,6 +44,17 @@ vi.mock("../../../api/modules/preferences", () => ({
     set: vi.fn().mockResolvedValue(undefined),
   },
 }));
+vi.mock("../../../api/modules/modelRoles", () => ({
+  modelRolesApi: {
+    get: vi.fn().mockResolvedValue({
+      primary: [],
+      backup: [],
+      last_resort: [],
+      available_models: [],
+    }),
+    save: vi.fn().mockResolvedValue(undefined),
+  },
+}));
 vi.mock("../../../api/modules/octopThreads", () => ({
   octopThreadsApi: { patch: vi.fn().mockResolvedValue({}) },
 }));
@@ -84,6 +95,7 @@ vi.mock("../../../context/AgentContext", () => ({
 import { connectorsApi } from "../../../api/modules/connectors";
 import { knowledgeBasesApi } from "../../../api/modules/knowledgeBases";
 import { preferencesApi } from "../../../api/modules/preferences";
+import { modelRolesApi } from "../../../api/modules/modelRoles";
 import { providerApi } from "../../../api/modules/provider";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
 import type { ResolvedModel } from "../../../api/types";
@@ -439,6 +451,27 @@ describe("useChatComposerResources — expert default model", () => {
     await waitFor(() =>
       expect(result.current.selectedModel).toBe("prov/preferred"),
     );
+  });
+
+  it("sends Auto (no explicit model) when roles are configured", async () => {
+    vi.mocked(preferencesApi.get).mockResolvedValue({
+      locale: "zh",
+      remote_browser_bookmarks: [],
+      preferred_model: "prov/preferred",
+      model_reasoning: {},
+    });
+    vi.mocked(modelRolesApi.get).mockResolvedValue({
+      primary: ["prov/role-a", "prov/role-b"],
+      backup: [],
+      last_resort: [],
+      available_models: ["prov/role-a", "prov/role-b", "prov/preferred"],
+    });
+
+    const { result } = renderHook(() =>
+      useChatComposerResources("expertA", null),
+    );
+
+    await waitFor(() => expect(result.current.selectedModel).toBeNull());
   });
 
   it("keeps an explicit thread model ahead of the expert default", async () => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { connectorsApi } from "../../../api/modules/connectors";
 import { providerApi } from "../../../api/modules/provider";
 import { preferencesApi } from "../../../api/modules/preferences";
+import { modelRolesApi } from "../../../api/modules/modelRoles";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
 import {
   knowledgeBasesApi,
@@ -123,6 +124,10 @@ export function useChatComposerResources(
   const [activeModelRef, setActiveModelRef] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [preferredModel, setPreferredModel] = useState<string | null>(null);
+  // True when any role model is configured. While roles are set, the
+  // composer's Auto must not fall back to the starred preferred model:
+  // it sends no explicit model so the backend resolves via the roles.
+  const [rolesConfigured, setRolesConfigured] = useState(false);
   const [modelReasoning, setModelReasoning] = useState<
     Record<
       string,
@@ -173,7 +178,8 @@ export function useChatComposerResources(
     const local = activeThreadId
       ? conversationOverrides[activeThreadId]
       : undefined;
-    const autoFallback = remoteBridge ? null : preferredModel;
+    const autoFallback =
+      remoteBridge || rolesConfigured ? null : preferredModel;
     setSelectedModel(
       local
         ? local.model
@@ -186,6 +192,7 @@ export function useChatComposerResources(
     expertDefaultModel,
     preferredModel,
     remoteBridge,
+    rolesConfigured,
     conversationOverrides,
   ]);
 
@@ -481,6 +488,24 @@ export function useChatComposerResources(
 
   useEffect(() => {
     let cancelled = false;
+    void modelRolesApi
+      .get()
+      .then((roles) => {
+        if (cancelled) return;
+        setRolesConfigured(
+          roles.primary.length > 0 ||
+            roles.backup.length > 0 ||
+            roles.last_resort.length > 0,
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     const loadActiveModel = () => {
       void providerApi
         .getActiveModel(resolvedAgentId)
@@ -569,7 +594,8 @@ export function useChatComposerResources(
     const local = activeThreadId
       ? conversationOverrides[activeThreadId]
       : undefined;
-    const autoFallback = remoteBridge ? null : preferredModel;
+    const autoFallback =
+      remoteBridge || rolesConfigured ? null : preferredModel;
     const model = local
       ? local.model
       : stickyModel || expertDefaultModel || autoFallback || null;
@@ -587,6 +613,7 @@ export function useChatComposerResources(
     expertDefaultModel,
     preferredModel,
     remoteBridge,
+    rolesConfigured,
     conversationOverrides,
     availableModels,
     modelsReady,
